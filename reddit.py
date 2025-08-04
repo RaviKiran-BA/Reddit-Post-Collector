@@ -33,9 +33,9 @@ logger = logging.getLogger(__name__)
 # Initialize Reddit API client (PRAW)
 try:
     reddit = praw.Reddit(
-        client_id="4wfEi-43DRJslZuKniV2Pg",  # Replace with your client_id
-        client_secret="xPWAmxwyITfyH4LFi0ukJjdUgKp0yQ",  # Replace with your client_secret
-        user_agent="python:reddit_trends_collector:1.0 by /u/Top-Sound476"  # Replace with your Reddit username
+        client_id="",  # Replace with your client_id
+        client_secret="",  # Replace with your client_secret
+        user_agent="python:reddit_trends_collector:1.0 by /u/"  # Replace with your Reddit username
     )
     reddit.user.me()
     logger.info("Reddit API authentication successful")
