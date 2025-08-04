@@ -1,0 +1,519 @@
+{
+  "name": "My workflow",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -3904,
+        32
+      ],
+      "id": "88a062e6-77d9-4e04-bc51-c3aa53029277",
+      "name": "When clicking ‘Execute workflow’"
+    },
+    {
+      "parameters": {
+        "operation": "search",
+        "location": "allReddit",
+        "keyword": "=AI, Technology, Science, Programming, Startups.",
+        "limit": 50,
+        "additionalFields": {
+          "sort": "new"
+        }
+      },
+      "type": "n8n-nodes-base.reddit",
+      "typeVersion": 1,
+      "position": [
+        -3696,
+        32
+      ],
+      "id": "88feaa1a-e6dd-41a2-98cc-535cab0f4361",
+      "name": "Search for a post",
+      "credentials": {
+        "redditOAuth2Api": {
+          "id": "GuLp4Pkv6X8wa9cv",
+          "name": "Reddit account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "inputText": "={{ $json.selftextTrimmed }}",
+        "categories": {
+          "categories": [
+            {
+              "category": "=AI",
+              "description": "=Posts about technology, AI, Science, Programming, Startups."
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.textClassifier",
+      "typeVersion": 1.1,
+      "position": [
+        -2992,
+        -80
+      ],
+      "id": "7b0e4e7a-f9bd-4df5-adc7-5cf0325030ff",
+      "name": "Text Classifier"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "3f5e85d1-6f6f-465e-b496-d3b7664643db",
+              "leftValue": "={{ $json.ups }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            },
+            {
+              "id": "040fdad0-3da8-4718-b104-a8afc11e3091",
+              "leftValue": "={{ $json.selftext }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "9b88dedd-7e23-4ccc-aa31-6a5c8309d5b8",
+              "leftValue": "={{ DateTime.fromSeconds($json.created).toISO() }}",
+              "rightValue": "={{ $today.minus({days: 21}).toISO() }}",
+              "operator": {
+                "type": "dateTime",
+                "operation": "after"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -3488,
+        32
+      ],
+      "id": "188c8eda-dad6-48d5-860d-7c985740caee",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "f4c239d4-0206-433e-aff2-6810d7a9a771",
+              "name": "upvotes",
+              "value": "={{ $json.ups }}",
+              "type": "number"
+            },
+            {
+              "id": "e428f37a-8e8f-4536-bd61-0de931fe1a25",
+              "name": "subredditsize",
+              "value": "={{ $json.subreddit_subscribers }}",
+              "type": "number"
+            },
+            {
+              "id": "5f3ee2ac-307a-4bdc-b966-10a097491bfc",
+              "name": "selftextTrimmed",
+              "value": "={{ $json.selftext.substring(0,500) }}",
+              "type": "string"
+            },
+            {
+              "id": "ca7335db-327f-4514-9018-7688a6d8d06f",
+              "name": "subreddit",
+              "value": "={{ $json.subreddit }}",
+              "type": "string"
+            },
+            {
+              "id": "3fa5adc9-f0bc-4905-b478-3a3ac4d90cc6",
+              "name": "date",
+              "value": "={{ DateTime.fromSeconds($json.created).toLocaleString() }}",
+              "type": "string"
+            },
+            {
+              "id": "3d6f545f-4ca4-4423-9baa-9dc544b044b8",
+              "name": "url",
+              "value": "={{ $json.url }}",
+              "type": "string"
+            },
+            {
+              "id": "97a770e7-7f81-4712-bb02-dac99bdae64f",
+              "name": "title",
+              "value": "={{ $json.title }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -3216,
+        16
+      ],
+      "id": "6cef0577-484f-4c1e-91b1-bcc3a6f25083",
+      "name": "Edit Fields"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        -2592,
+        0
+      ],
+      "id": "efdd1526-da35-4cba-868a-38f8fc574389",
+      "name": "Merge"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "db6cb541-0ddf-462c-a210-8f8fad4ba265",
+              "leftValue": "={{ $json.choices[0].text }}",
+              "rightValue": "No",
+              "operator": {
+                "type": "string",
+                "operation": "contains"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -2384,
+        0
+      ],
+      "id": "c6ba5b84-6526-4e50-856f-418e5d6dbc56",
+      "name": "If1"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "7295d31c-8c74-4081-8b6e-6a15b685e82a",
+              "name": "upvotes",
+              "value": "={{ $json.upvotes }}",
+              "type": "number"
+            },
+            {
+              "id": "f93009ff-6de6-4600-ae88-aae9a29fd871",
+              "name": "subreddit",
+              "value": "={{ $json.subreddit }}",
+              "type": "string"
+            },
+            {
+              "id": "23b82d41-5c62-4afa-9e08-9fc74d788f94",
+              "name": "date",
+              "value": "={{ $json.date }}",
+              "type": "string"
+            },
+            {
+              "id": "95c22aed-f69a-4576-bb3e-34e6d9c58933",
+              "name": "url",
+              "value": "={{ $json.url }}",
+              "type": "string"
+            },
+            {
+              "id": "bf78562b-c9c3-4020-a332-62f800d85052",
+              "name": "title",
+              "value": "={{ $json.title }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -2016,
+        16
+      ],
+      "id": "b6de3e91-35dc-4e53-9edd-ff16b812a745",
+      "name": "Edit Fields1"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "aabcb131-1d43-4908-926d-8e9ffe45e876",
+              "name": "Title",
+              "value": "={{$json[\"title\"]}}",
+              "type": "string"
+            },
+            {
+              "id": "2ee65837-1368-4af5-a2c7-eca0eacfcccb",
+              "name": "URL",
+              "value": "={{$json[\"url\"]}}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -1808,
+        16
+      ],
+      "id": "c9185180-4f81-4633-9b1b-c859a2da557b",
+      "name": "Edit Fields2"
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "1bcJj9aFOsWG0J1ZgK3Il4BqJ8zPmGMXmjzmZV6T1II0",
+          "mode": "list",
+          "cachedResultName": "Rk",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1bcJj9aFOsWG0J1ZgK3Il4BqJ8zPmGMXmjzmZV6T1II0/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Sheet1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1bcJj9aFOsWG0J1ZgK3Il4BqJ8zPmGMXmjzmZV6T1II0/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Title",
+              "displayName": "Title",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "URL",
+              "displayName": "URL",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.6,
+      "position": [
+        -1600,
+        16
+      ],
+      "id": "373ae291-6b82-424f-9968-ac0a0d7120d1",
+      "name": "Append or update row in sheet",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "Wg1HvuYnZTNTTB0C",
+          "name": "Google Sheets account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGroq",
+      "typeVersion": 1,
+      "position": [
+        -3072,
+        128
+      ],
+      "id": "1c3885c4-8cfc-4a45-9a64-b2d2ed91b3e9",
+      "name": "Groq Chat Model",
+      "credentials": {
+        "groqApi": {
+          "id": "r46ZPT38Dp4o6uB6",
+          "name": "Groq account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When clicking ‘Execute workflow’": {
+      "main": [
+        [
+          {
+            "node": "Search for a post",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search for a post": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Text Classifier": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [],
+        [],
+        [],
+        []
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "Edit Fields",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields": {
+      "main": [
+        [
+          {
+            "node": "Text Classifier",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge": {
+      "main": [
+        [
+          {
+            "node": "If1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If1": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Edit Fields1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields1": {
+      "main": [
+        [
+          {
+            "node": "Edit Fields2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields2": {
+      "main": [
+        [
+          {
+            "node": "Append or update row in sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Text Classifier",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "8f8366be-213f-48d8-b038-1d8002c97a97",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "30deb6940ad19f2b1ede7b8afc07d2889955cd00def557bbb7e2ec0ea2e0259b"
+  },
+  "id": "VQPUnOaNc867R1tn",
+  "tags": [
+    {
+      "createdAt": "2025-07-27T18:49:24.042Z",
+      "updatedAt": "2025-07-27T18:49:24.042Z",
+      "id": "t0OtfdGy1jrWLCM5",
+      "name": "Voiceflow"
+    }
+  ]
+}
