@@ -1,0 +1,505 @@
+Here is the complete, corrected code.
+Before the code, to answer your question: Where should you add new equations?
+If you have additional physics constraints (for example, calculating pitching moment Cm about a different Center of Gravity, or enforcing a drag polar relation
+you should add them in three steps:
+Write a new loss function for it (place it right below axis_transform_loss). Use x_raw_batch to grab physical inputs and y_pred to grab predictions.
+
+def my_custom_physics_loss(x_raw_batch, y_pred):
+    # Extract what you need (example)
+    cl = y_pred[:, cl_idx]
+    cd = y_pred[:, cdf_idx]
+    # Create the relation and penalize it (don't forget OUTPUT_LOSS_WEIGHTS!)
+    # ...
+    return tf.reduce_mean(tf.square(violation))
+
+  Add it to train_step:
+Calculate it alongside the others, and add it to loss_total (e.g., + LAMBDA_CUSTOM * loss_custom).
+Add it to eval_step:
+Calculate it and return it so you can track it in the validation loop.
+
+DROPOUT_RATE changed to 0.0.
+Inverse-variance weights applied to the physics violations in symmetry_loss and axis_transform_loss.
+Type-safe Pi conversion for TensorFlow.
+Early Stopping now monitors the Total Validation Loss (val_data + val_physics) rather than just the data loss, ensuring you don't save a checkpoint that has good data accuracy but broken physics.
+
+
+Here is the complete, corrected code.
+
+Before the code, to answer your question: Where should you add new equations?
+
+If you have additional physics constraints (for example, calculating pitching
+moment C_m about a different Center of Gravity, or enforcing a drag polar
+relation C_D = C_{D0} + K C_L^2), you should add them in three steps:
+
+1.  Write a new loss function for it (place it right below axis_transform_loss).
+    Use x_raw_batch to grab physical inputs and y_pred to grab predictions.
+    def my_custom_physics_loss(x_raw_batch, y_pred):
+        # Extract what you need (example)
+        cl = y_pred[:, cl_idx]
+        cd = y_pred[:, cdf_idx]
+        # Create the relation and penalize it (don't forget OUTPUT_LOSS_WEIGHTS!)
+        # ...
+        return tf.reduce_mean(tf.square(violation))
+2.  Add it to train_step: Calculate it alongside the others, and add it to
+    loss_total (e.g., + LAMBDA_CUSTOM * loss_custom).
+3.  Add it to eval_step: Calculate it and return it so you can track it in the
+    validation loop.
+
+Complete, Corrected Code
+
+Here is the fully fixed code. The major changes made are:
+
+  - DROPOUT_RATE changed to 0.0.
+  - Inverse-variance weights applied to the physics violations in symmetry_loss
+    and axis_transform_loss.
+  - Type-safe Pi conversion for TensorFlow.
+  - Early Stopping now monitors the Total Validation Loss (val_data +
+    val_physics) rather than just the data loss, ensuring you don't save a
+    checkpoint that has good data accuracy but broken physics.
+
+"""
+Physics-Informed DNN (TensorFlow) for aerodynamic coefficient prediction.
+
+Predicts: CN, CS, CAF, CPM, CYM, CRM, CL, CDF from 100+ wind-tunnel input features.
+
+PHYSICS CONSTRAINTS USED (both are exact relations, not approximations, PROVIDED
+your sign convention matches what's assumed below -- verify before trusting results):
+
+1. BETA SYMMETRY (requires a left-right-symmetric vehicle):
+   - CS, CYM, CRM are ODD in BETA:  f(-BETA) = -f(BETA)
+   - CN, CAF, CPM, CL, CDF are EVEN in BETA: f(-BETA) = f(BETA)
+
+2. AXIS TRANSFORM (body-axis -> wind-axis rotation by angle of attack):
+   CL  = CN*cos(ALPHA) - CAF*sin(ALPHA)
+   CDF = CN*sin(ALPHA) + CAF*cos(ALPHA)
+"""
+
+import os
+import json
+import numpy as np
+import pandas as pd
+import tensorflow as tf
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import OrdinalEncoder, StandardScaler
+from sklearn.metrics import r2_score
+import joblib
+
+# ============================================================================
+# CONFIG -- edit everything in this block for your actual data
+# ============================================================================
+
+DATA_PATH = "wind_tunnel_data.xlsx"     # Excel file, Sheet1 = inputs, Sheet2 = outputs
+OUTPUT_DIR = "pinn_dnn_outputs"
+
+OUTPUT_COLS = ['CN', 'CS', 'CAF', 'CPM', 'CYM', 'CRM', 'CL', 'CDF']
+
+# Column names as they appear in your input sheet. MUST match exactly.
+ALPHA_COL = 'ALPHA'          # angle of attack
+BETA_COL = 'BETA'            # sideslip angle
+ALPHA_UNITS = 'deg'          # 'deg' or 'rad' -- affects the axis-transform loss
+
+# Columns whose SIGN must flip when BETA is mirrored (BETA -> -BETA).
+MIRROR_SIGN_FLIP_COLS = [BETA_COL, 'DELTA_A', 'DELTA_R', 'P_RATE', 'R_RATE']
+
+# Output columns that are ODD in BETA (flip sign when BETA flips)
+ODD_OUTPUTS = ['CS', 'CYM', 'CRM']
+# Output columns that are EVEN in BETA (unchanged when BETA flips)
+EVEN_OUTPUTS = ['CN', 'CAF', 'CPM', 'CL', 'CDF']
+
+USE_AXIS_TRANSFORM_LOSS = True
+
+EXCLUDE_INPUT_COLS = []      # any columns to drop before training (IDs, notes, etc.)
+
+# Physics loss weights
+LAMBDA_SYM = 0.05
+LAMBDA_AXIS = 0.05
+
+# Architecture / training
+HIDDEN_LAYERS = [256, 256, 128, 64]
+DROPOUT_RATE = 0.0           # MUST BE 0.0 for exact PINNs, otherwise symmetry loss penalizes dropout noise!
+LEARNING_RATE = 1e-3
+BATCH_SIZE = 256
+MAX_EPOCHS = 300
+EARLY_STOP_PATIENCE = 20
+VAL_FRACTION = 0.15          
+TEST_FRACTION = 0.15         
+SEED = 42
+
+# ============================================================================
+# Reproducibility
+# ============================================================================
+
+np.random.seed(SEED)
+tf.random.set_seed(SEED)
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+# ============================================================================
+# Data loading
+# ============================================================================
+
+def load_data(path, output_cols, exclude_cols=None):
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Data file not found: {path}")
+    df_in = pd.read_excel(path, sheet_name='Sheet1')
+    df_out = pd.read_excel(path, sheet_name='Sheet2')
+
+    if exclude_cols:
+        df_in = df_in.drop(columns=[c for c in exclude_cols if c in df_in.columns])
+
+    missing_out = set(output_cols) - set(df_out.columns)
+    if missing_out:
+        raise ValueError(f"Output columns missing from Sheet2: {missing_out}")
+
+    print(f"[INFO] Loaded {len(df_in)} rows, {df_in.shape[1]} input columns")
+    return df_in, df_out[output_cols]
+
+
+def fit_encoder(df):
+    cat_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
+    if not cat_cols:
+        return None, cat_cols
+    df = df.copy()
+    for col in cat_cols:
+        df[col] = df[col].astype(str).str.strip().str.lower()
+    encoder = OrdinalEncoder(handle_unknown='use_encoded_value',
+                              unknown_value=-1, encoded_missing_value=-2)
+    encoder.fit(df[cat_cols])
+    print(f"[INFO] Categorical columns encoded: {cat_cols}")
+    return encoder, cat_cols
+
+
+def encode_and_numify(df, encoder, cat_cols):
+    df = df.copy()
+    if cat_cols:
+        for col in cat_cols:
+            df[col] = df[col].astype(str).str.strip().str.lower()
+        df[cat_cols] = encoder.transform(df[cat_cols])
+    df = df.apply(pd.to_numeric, errors='coerce')
+    nan_counts = df.isna().sum()
+    if nan_counts.any():
+        print(f"[WARN] NaNs after encoding, filled with 0:\n{nan_counts[nan_counts > 0]}")
+    df = df.fillna(0)
+    return df
+
+# ============================================================================
+# Load, split, encode, get raw (unscaled) numpy arrays
+# ============================================================================
+
+df_in, df_out = load_data(DATA_PATH, OUTPUT_COLS, EXCLUDE_INPUT_COLS)
+input_cols = df_in.columns.tolist()
+
+for req_col in [ALPHA_COL, BETA_COL]:
+    if req_col not in input_cols:
+        raise ValueError(f"Required column '{req_col}' not found in input data")
+for col in MIRROR_SIGN_FLIP_COLS:
+    if col not in input_cols:
+        raise ValueError(f"MIRROR_SIGN_FLIP_COLS references '{col}' which is not "
+                          f"an input column -- fix the CONFIG block")
+
+X_trainval_raw, X_test_raw, y_trainval_raw, y_test_raw = train_test_split(
+    df_in, df_out, test_size=TEST_FRACTION, random_state=SEED, shuffle=True
+)
+val_size_of_trainval = VAL_FRACTION / (1.0 - TEST_FRACTION)
+X_train_raw, X_val_raw, y_train_raw, y_val_raw = train_test_split(
+    X_trainval_raw, y_trainval_raw, test_size=val_size_of_trainval,
+    random_state=SEED, shuffle=True
+)
+print(f"[INFO] Train: {len(X_train_raw)}  Val: {len(X_val_raw)}  Test: {len(X_test_raw)}")
+
+encoder, cat_cols = fit_encoder(X_train_raw)
+X_train_enc = encode_and_numify(X_train_raw, encoder, cat_cols)
+X_val_enc = encode_and_numify(X_val_raw, encoder, cat_cols)
+X_test_enc = encode_and_numify(X_test_raw, encoder, cat_cols)
+
+# indices needed later
+alpha_idx = input_cols.index(ALPHA_COL)
+beta_idx = input_cols.index(BETA_COL)
+mirror_flip_idx = [input_cols.index(c) for c in MIRROR_SIGN_FLIP_COLS]
+odd_idx = [OUTPUT_COLS.index(c) for c in ODD_OUTPUTS]
+even_idx = [OUTPUT_COLS.index(c) for c in EVEN_OUTPUTS]
+if USE_AXIS_TRANSFORM_LOSS:
+    cn_idx, caf_idx = OUTPUT_COLS.index('CN'), OUTPUT_COLS.index('CAF')
+    cl_idx, cdf_idx = OUTPUT_COLS.index('CL'), OUTPUT_COLS.index('CDF')
+
+X_train_np = X_train_enc.to_numpy(dtype=np.float64)
+X_val_np = X_val_enc.to_numpy(dtype=np.float64)
+X_test_np = X_test_enc.to_numpy(dtype=np.float64)
+y_train_np = y_train_raw.to_numpy(dtype=np.float64)
+y_val_np = y_val_raw.to_numpy(dtype=np.float64)
+y_test_np = y_test_raw.to_numpy(dtype=np.float64)
+
+# ============================================================================
+# Scaler & Output Loss Weights
+# ============================================================================
+
+x_scaler = StandardScaler()
+x_scaler.fit(X_train_np)
+X_MEAN = tf.constant(x_scaler.mean_, dtype=tf.float32)
+X_STD = tf.constant(np.where(x_scaler.scale_ == 0, 1.0, x_scaler.scale_), dtype=tf.float32)
+
+y_std = y_train_np.std(axis=0)
+y_std = np.where(y_std == 0, 1.0, y_std)
+OUTPUT_LOSS_WEIGHTS = tf.constant(1.0 / (y_std ** 2), dtype=tf.float32)
+print(f"[INFO] Output loss weights (1/var): {dict(zip(OUTPUT_COLS, OUTPUT_LOSS_WEIGHTS.numpy().round(3)))}")
+
+def scale_inputs(x_raw):
+    return (x_raw - X_MEAN) / X_STD
+
+# ============================================================================
+# tf.data pipelines 
+# ============================================================================
+
+def make_dataset(X_np, y_np, batch_size, shuffle):
+    ds = tf.data.Dataset.from_tensor_slices(
+        (X_np.astype(np.float32), y_np.astype(np.float32))
+    )
+    if shuffle:
+        ds = ds.shuffle(buffer_size=min(len(X_np), 50000), seed=SEED)
+    ds = ds.batch(batch_size, drop_remainder=shuffle) # drop remainder during train to prevent retracing
+    return ds.prefetch(tf.data.AUTOTUNE)
+
+train_ds = make_dataset(X_train_np, y_train_np, BATCH_SIZE, shuffle=True)
+val_ds = make_dataset(X_val_np, y_val_np, BATCH_SIZE, shuffle=False)
+test_ds = make_dataset(X_test_np, y_test_np, BATCH_SIZE, shuffle=False)
+
+# ============================================================================
+# Model
+# ============================================================================
+
+def build_model(n_inputs, n_outputs, hidden_layers, dropout_rate):
+    inputs = tf.keras.Input(shape=(n_inputs,))
+    x = inputs
+    for units in hidden_layers:
+        x = tf.keras.layers.Dense(units, activation='relu',
+                                   kernel_initializer='he_normal')(x)
+        if dropout_rate > 0:
+            x = tf.keras.layers.Dropout(dropout_rate)(x)
+    outputs = tf.keras.layers.Dense(n_outputs, activation='linear')(x)
+    return tf.keras.Model(inputs, outputs)
+
+model = build_model(X_train_np.shape[1], len(OUTPUT_COLS), HIDDEN_LAYERS, DROPOUT_RATE)
+optimizer = tf.keras.optimizers.Adam(learning_rate=LEARNING_RATE)
+
+# ============================================================================
+# Loss functions
+# ============================================================================
+
+def weighted_mse(y_true, y_pred):
+    sq_err = tf.square(y_true - y_pred)
+    return tf.reduce_mean(sq_err * OUTPUT_LOSS_WEIGHTS)
+
+
+def symmetry_loss(x_raw_batch, y_pred):
+    flip_mask = tf.scatter_nd(
+        indices=[[i] for i in mirror_flip_idx],
+        updates=[-1.0] * len(mirror_flip_idx),
+        shape=[x_raw_batch.shape[1]]
+    )
+    keep_mask = 1.0 - tf.abs(flip_mask)
+    sign_vec = keep_mask + flip_mask  
+    x_mirror_raw = x_raw_batch * sign_vec
+
+    x_mirror_scaled = scale_inputs(x_mirror_raw)
+    y_pred_mirror = model(x_mirror_scaled, training=False) # training=False bypasses any stray dropout
+
+    odd_violation = tf.gather(y_pred, odd_idx, axis=1) + tf.gather(y_pred_mirror, odd_idx, axis=1)
+    even_violation = tf.gather(y_pred, even_idx, axis=1) - tf.gather(y_pred_mirror, even_idx, axis=1)
+
+    # Apply inverse-variance weights to ensure small-magnitude outputs are respected!
+    odd_weights = tf.gather(OUTPUT_LOSS_WEIGHTS, odd_idx)
+    even_weights = tf.gather(OUTPUT_LOSS_WEIGHTS, even_idx)
+
+    return tf.reduce_mean(tf.square(odd_violation) * odd_weights) + \
+           tf.reduce_mean(tf.square(even_violation) * even_weights)
+
+
+def axis_transform_loss(x_raw_batch, y_pred):
+    alpha = x_raw_batch[:, alpha_idx]
+    if ALPHA_UNITS == 'deg':
+        alpha = alpha * tf.constant(np.pi / 180.0, dtype=tf.float32)
+    
+    cn = y_pred[:, cn_idx]
+    caf = y_pred[:, caf_idx]
+    cl_pred = y_pred[:, cl_idx]
+    cdf_pred = y_pred[:, cdf_idx]
+
+    cl_from_relation = cn * tf.cos(alpha) - caf * tf.sin(alpha)
+    cdf_from_relation = cn * tf.sin(alpha) + caf * tf.cos(alpha)
+
+    # Apply inverse-variance weights!
+    cl_weight = OUTPUT_LOSS_WEIGHTS[cl_idx]
+    cdf_weight = OUTPUT_LOSS_WEIGHTS[cdf_idx]
+
+    return tf.reduce_mean(tf.square(cl_pred - cl_from_relation) * cl_weight) + \
+           tf.reduce_mean(tf.square(cdf_pred - cdf_from_relation) * cdf_weight)
+
+# >>> IF YOU WANT TO ADD NEW PHYSICS EQUATIONS, ADD THEM HERE <<<
+
+
+# ============================================================================
+# Train / eval steps
+# ============================================================================
+
+@tf.function
+def train_step(x_raw_batch, y_batch):
+    with tf.GradientTape() as tape:
+        x_scaled = scale_inputs(x_raw_batch)
+        y_pred = model(x_scaled, training=True)
+
+        loss_data = weighted_mse(y_batch, y_pred)
+        loss_sym = symmetry_loss(x_raw_batch, y_pred)
+        loss_axis = axis_transform_loss(x_raw_batch, y_pred) if USE_AXIS_TRANSFORM_LOSS \
+            else tf.constant(0.0)
+
+        # IF YOU ADDED A NEW LOSS, ADD IT TO THIS EQUATION
+        loss_total = loss_data + LAMBDA_SYM * loss_sym + LAMBDA_AXIS * loss_axis
+
+    grads = tape.gradient(loss_total, model.trainable_variables)
+    optimizer.apply_gradients(zip(grads, model.trainable_variables))
+    return loss_data, loss_sym, loss_axis, loss_total
+
+
+@tf.function
+def eval_step(x_raw_batch, y_batch):
+    x_scaled = scale_inputs(x_raw_batch)
+    y_pred = model(x_scaled, training=False)
+    
+    loss_data = weighted_mse(y_batch, y_pred)
+    loss_sym = symmetry_loss(x_raw_batch, y_pred)
+    loss_axis = axis_transform_loss(x_raw_batch, y_pred) if USE_AXIS_TRANSFORM_LOSS \
+        else tf.constant(0.0)
+    
+    # IF YOU ADDED A NEW LOSS, RETURN IT HERE AS WELL
+    return loss_data, loss_sym, loss_axis
+
+
+# ============================================================================
+# Training loop
+# ============================================================================
+
+best_val_loss = np.inf
+best_weights = None
+patience_counter = 0
+history = []
+
+for epoch in range(MAX_EPOCHS):
+    train_data_losses, train_sym_losses, train_axis_losses = [], [], []
+    for x_batch, y_batch in train_ds:
+        ld, ls, la, lt = train_step(x_batch, y_batch)
+        train_data_losses.append(float(ld))
+        train_sym_losses.append(float(ls))
+        train_axis_losses.append(float(la))
+
+    val_data_losses, val_sym_losses, val_axis_losses = [], [], []
+    for x_batch, y_batch in val_ds:
+        ld, ls, la = eval_step(x_batch, y_batch)
+        val_data_losses.append(float(ld))
+        val_sym_losses.append(float(ls))
+        val_axis_losses.append(float(la))
+
+    train_data_loss = np.mean(train_data_losses)
+    val_data_loss = np.mean(val_data_losses)
+    val_sym_loss = np.mean(val_sym_losses)
+    val_axis_loss = np.mean(val_axis_losses)
+
+    # Monitor TOTAL loss for early stopping to ensure we don't save a model 
+    # with broken physics just because it fit the data slightly better
+    val_total_loss = val_data_loss + (LAMBDA_SYM * val_sym_loss) + (LAMBDA_AXIS * val_axis_loss)
+
+    history.append({
+        'epoch': epoch,
+        'train_data_loss': train_data_loss,
+        'train_sym_loss': np.mean(train_sym_losses),
+        'train_axis_loss': np.mean(train_axis_losses),
+        'val_data_loss': val_data_loss,
+        'val_sym_loss': val_sym_loss,
+        'val_axis_loss': val_axis_loss,
+        'val_total_loss': val_total_loss
+    })
+
+    print(f"[Epoch {epoch:3d}] train_data={train_data_loss:.5f}  "
+          f"val_data={val_data_loss:.5f}  "
+          f"val_sym={val_sym_loss:.5f}  "
+          f"val_axis={val_axis_loss:.5f}")
+
+    if val_total_loss < best_val_loss - 1e-6:
+        best_val_loss = val_total_loss
+        best_weights = model.get_weights()
+        patience_counter = 0
+    else:
+        patience_counter += 1
+        if patience_counter >= EARLY_STOP_PATIENCE:
+            print(f"[INFO] Early stopping at epoch {epoch} "
+                  f"(no total val loss improvement for {EARLY_STOP_PATIENCE} epochs)")
+            break
+
+if best_weights is not None:
+    model.set_weights(best_weights)
+    print(f"[INFO] Restored best weights (val_total_loss={best_val_loss:.5f})")
+
+pd.DataFrame(history).to_csv(os.path.join(OUTPUT_DIR, "training_history.csv"), index=False)
+
+# ============================================================================
+# Final test-set evaluation
+# ============================================================================
+
+def calculate_arctan_error(actual, predicted):
+    denom = np.where(np.abs(actual) < 1e-10, 1e-10, np.abs(actual))
+    raw_ratio = (predicted - actual) / denom
+    return np.arctan(raw_ratio) * (180.0 / np.pi)
+
+X_test_scaled_np = ((X_test_np - x_scaler.mean_) / np.where(x_scaler.scale_ == 0, 1.0, x_scaler.scale_))
+y_test_pred = model.predict(X_test_scaled_np.astype(np.float32), batch_size=BATCH_SIZE)
+
+print("\n[TEST SET RESULTS]")
+results_summary = []
+for i, col in enumerate(OUTPUT_COLS):
+    actual = y_test_np[:, i]
+    pred = y_test_pred[:, i]
+    r2 = r2_score(actual, pred)
+    arctan_err = calculate_arctan_error(actual, pred)
+    mean_abs_arctan = np.mean(np.abs(arctan_err))
+    results_summary.append({'coefficient': col, 'R2': round(r2, 4),
+                             'mean_abs_arctan_error_deg': round(mean_abs_arctan, 3)})
+    print(f"  {col:6s}  R2={r2:.4f}  mean|arctan err|={mean_abs_arctan:.3f} deg")
+
+df_results = pd.DataFrame(results_summary)
+df_results.to_csv(os.path.join(OUTPUT_DIR, "test_results.csv"), index=False)
+
+# Symmetry violation check on the test set, as raw physics numbers (not loss units)
+X_test_mirror_raw = X_test_np.copy()
+for idx in mirror_flip_idx:
+    X_test_mirror_raw[:, idx] *= -1
+X_test_mirror_scaled = ((X_test_mirror_raw - x_scaler.mean_) /
+                         np.where(x_scaler.scale_ == 0, 1.0, x_scaler.scale_))
+y_test_pred_mirror = model.predict(X_test_mirror_scaled.astype(np.float32), batch_size=BATCH_SIZE)
+
+print("\n[SYMMETRY CHECK on test set -- lower is better, 0 = perfect]")
+for i in odd_idx:
+    viol = np.mean(np.abs(y_test_pred[:, i] + y_test_pred_mirror[:, i]))
+    print(f"  {OUTPUT_COLS[i]:6s} (odd)  mean|f(b)+f(-b)| = {viol:.5f}")
+for i in even_idx:
+    viol = np.mean(np.abs(y_test_pred[:, i] - y_test_pred_mirror[:, i]))
+    print(f"  {OUTPUT_COLS[i]:6s} (even) mean|f(b)-f(-b)| = {viol:.5f}")
+
+# ============================================================================
+# Save model + preprocessing artifacts
+# ============================================================================
+
+model.save(os.path.join(OUTPUT_DIR, "model.keras"))
+joblib.dump({
+    'x_scaler': x_scaler,
+    'encoder': encoder,
+    'cat_cols': cat_cols,
+    'input_cols': input_cols,
+    'output_cols': OUTPUT_COLS,
+    'config': {
+        'ALPHA_COL': ALPHA_COL, 'BETA_COL': BETA_COL, 'ALPHA_UNITS': ALPHA_UNITS,
+        'MIRROR_SIGN_FLIP_COLS': MIRROR_SIGN_FLIP_COLS,
+        'ODD_OUTPUTS': ODD_OUTPUTS, 'EVEN_OUTPUTS': EVEN_OUTPUTS,
+        'USE_AXIS_TRANSFORM_LOSS': USE_AXIS_TRANSFORM_LOSS,
+        'LAMBDA_SYM': LAMBDA_SYM, 'LAMBDA_AXIS': LAMBDA_AXIS,
+    }
+}, os.path.join(OUTPUT_DIR, "preprocessing.pkl"))
+
+print(f"\n[DONE] Model and artifacts saved to {OUTPUT_DIR}/")
