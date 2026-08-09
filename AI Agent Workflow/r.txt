@@ -24,3 +24,4 @@ python flight_app.py
 from a terminal (or Anaconda Prompt) in that folder. It's simpler, doesn't block a notebook kernel, and is the intended way to use it.
 Which situation are you actually in — local Jupyter, or a hosted one? And is there a reason you want it in a notebook specifically, or would the terminal route work fine for you?
 
+
